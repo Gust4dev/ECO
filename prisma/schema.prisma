@@ -1,0 +1,184 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  profile      UserProfile?
+  transactions Transaction[]
+  goals        Goal[]
+  categories   Category[]
+  auditLogs    AuditLog[]
+
+  @@map("users")
+}
+
+model UserProfile {
+  id     String @id @default(cuid())
+  userId String @unique @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  incomeType           IncomeType @default(VARIABLE) @map("income_type")
+  averageMonthlyIncome Int        @default(0) @map("average_monthly_income")
+  emergencyMonths      Int        @default(6) @map("emergency_months")
+  billingCycleDay      Int        @default(1) @map("billing_cycle_day")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("user_profiles")
+}
+
+enum IncomeType {
+  FIXED
+  VARIABLE
+  MIXED
+}
+
+model Transaction {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  description  String
+  amountCents  Int               @map("amount_cents")
+  type         TransactionType
+  status       TransactionStatus @default(CONFIRMED)
+
+  categoryId String?   @map("category_id")
+  category   Category? @relation(fields: [categoryId], references: [id])
+
+  occurredAt   DateTime @map("occurred_at")
+  competenceAt DateTime @map("competence_at")
+
+  isInstallment      Boolean @default(false) @map("is_installment")
+  installmentGroupId String? @map("installment_group_id")
+  installmentNumber  Int?    @map("installment_number")
+  installmentTotal   Int?    @map("installment_total")
+
+  goalId String? @map("goal_id")
+  goal   Goal?   @relation(fields: [goalId], references: [id])
+
+  cancelledAt  DateTime? @map("cancelled_at")
+  cancelReason String?   @map("cancel_reason")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, competenceAt])
+  @@index([userId, status])
+  @@index([installmentGroupId])
+  @@map("transactions")
+}
+
+enum TransactionType {
+  INCOME
+  EXPENSE
+  TRANSFER
+}
+
+enum TransactionStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+}
+
+model Goal {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String
+  description String?
+
+  targetCents       Int  @map("target_cents")
+  currentCents      Int  @default(0) @map("current_cents")
+  monthlyAllocation Int? @map("monthly_allocation")
+
+  priority Int @default(5)
+
+  targetDate    DateTime? @map("target_date")
+  estimatedDate DateTime? @map("estimated_date")
+
+  status GoalStatus @default(ACTIVE)
+
+  transactions Transaction[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, status])
+  @@map("goals")
+}
+
+enum GoalStatus {
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+model Category {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name  String
+  color String?
+  icon  String?
+
+  monthlyBudgetCents Int? @map("monthly_budget_cents")
+
+  parentId String?    @map("parent_id")
+  parent   Category?  @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryHierarchy")
+
+  transactions Transaction[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, name])
+  @@map("categories")
+}
+
+model AuditLog {
+  id     String @id @default(cuid())
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  entityType String      @map("entity_type")
+  entityId   String      @map("entity_id")
+  action     AuditAction
+
+  previousData Json? @map("previous_data")
+  newData      Json? @map("new_data")
+
+  ipAddress String? @map("ip_address")
+  userAgent String? @map("user_agent")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, entityType, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  CANCEL
+  RESTORE
+}
