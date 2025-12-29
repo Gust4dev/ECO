@@ -1,5 +1,6 @@
 import { randomUUID } from "crypto";
 import { addMonths, setDate, endOfMonth, startOfMonth } from "date-fns";
+import { toLocalDate, getCompetenceFromDate } from "@/lib/dates";
 import type { InstallmentInput, ExpandedInstallment } from "../types";
 
 export function expandInstallments(input: InstallmentInput): ExpandedInstallment[] {
@@ -24,18 +25,20 @@ export function expandInstallments(input: InstallmentInput): ExpandedInstallment
   const installmentGroupId = randomUUID();
   const baseAmount = Math.floor(totalAmountCents / installments);
   const remainder = totalAmountCents - baseAmount * installments;
-  const targetDay = dayOfMonth ?? startDate.getDate();
+  
+  const localStartDate = toLocalDate(startDate);
+  const targetDay = dayOfMonth ?? localStartDate.getDate();
 
   const expanded: ExpandedInstallment[] = [];
 
   for (let i = 0; i < installments; i++) {
     const amountCents = i === 0 ? baseAmount + remainder : baseAmount;
 
-    let occurredAt = addMonths(startDate, i);
+    let occurredAt = addMonths(localStartDate, i);
     const lastDayOfMonth = endOfMonth(occurredAt).getDate();
     occurredAt = setDate(occurredAt, Math.min(targetDay, lastDayOfMonth));
 
-    const competenceAt = startOfMonth(occurredAt);
+    const competenceAt = getCompetenceFromDate(occurredAt);
 
     expanded.push({
       description: `${description} (${i + 1}/${installments})`,
@@ -63,4 +66,14 @@ export function calculateInstallmentAmount(
     baseAmount,
     firstAmount: baseAmount + remainder,
   };
+}
+
+export function recalculateRemainingInstallments(
+  originalTotal: number,
+  paidAmount: number,
+  remainingCount: number
+): number {
+  const remaining = originalTotal - paidAmount;
+  if (remaining <= 0 || remainingCount <= 0) return 0;
+  return Math.ceil(remaining / remainingCount);
 }

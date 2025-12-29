@@ -1,7 +1,8 @@
 import { router, protectedProcedure } from "../trpc";
 import { z } from "zod";
 import { calculateProjection } from "@/kernel/projections/calculator";
-import { startOfMonth, subMonths } from "date-fns";
+import { startOfMonth, subMonths, addMonths } from "date-fns";
+import { nowLocal } from "@/lib/dates";
 
 export const projectionsRouter = router({
   getMonthly: protectedProcedure
@@ -11,29 +12,38 @@ export const projectionsRouter = router({
       })
     )
     .query(async ({ ctx, input }) => {
+      const now = nowLocal();
+      const threeMonthsAgo = subMonths(startOfMonth(now), 3);
+      const twelveMonthsAhead = addMonths(startOfMonth(now), input.monthsAhead);
+
       const profile = await ctx.prisma.userProfile.findUnique({
         where: { userId: ctx.userId },
       });
 
-      const sixMonthsAgo = subMonths(new Date(), 6);
-
-      const [incomeHistory, pendingExpenses, goals] = await Promise.all([
+      const [incomeHistory, pendingExpenses, confirmedCurrentMonth, goals] = await Promise.all([
         ctx.prisma.transaction.groupBy({
           by: ["competenceAt"],
           where: {
             userId: ctx.userId,
             type: "INCOME",
             status: "CONFIRMED",
-            competenceAt: { gte: sixMonthsAgo },
+            competenceAt: {
+              gte: threeMonthsAgo,
+              lt: startOfMonth(now),
+            },
           },
           _sum: { amountCents: true },
         }),
+
         ctx.prisma.transaction.findMany({
           where: {
             userId: ctx.userId,
             type: "EXPENSE",
             status: "PENDING",
-            competenceAt: { gte: startOfMonth(new Date()) },
+            competenceAt: {
+              gte: startOfMonth(now),
+              lte: twelveMonthsAhead,
+            },
           },
           select: {
             amountCents: true,
@@ -41,6 +51,20 @@ export const projectionsRouter = router({
             isInstallment: true,
           },
         }),
+
+        ctx.prisma.transaction.aggregate({
+          where: {
+            userId: ctx.userId,
+            type: "EXPENSE",
+            status: "CONFIRMED",
+            competenceAt: {
+              gte: startOfMonth(now),
+              lt: addMonths(startOfMonth(now), 1),
+            },
+          },
+          _sum: { amountCents: true },
+        }),
+
         ctx.prisma.goal.findMany({
           where: { userId: ctx.userId, status: "ACTIVE" },
           orderBy: { priority: "asc" },
@@ -57,37 +81,68 @@ export const projectionsRouter = router({
 
       const currentBalance = await getCurrentBalance(ctx.prisma, ctx.userId);
 
+      const allPendingExpenses = [
+        ...pendingExpenses,
+        ...(confirmedCurrentMonth._sum.amountCents
+          ? [{ amountCents: confirmedCurrentMonth._sum.amountCents, competenceAt: startOfMonth(now), isInstallment: false }]
+          : []),
+      ];
+
       return calculateProjection({
         monthsAhead: input.monthsAhead,
         startingBalance: currentBalance,
         averageIncome,
-        pendingExpenses,
+        pendingExpenses: allPendingExpenses,
         goals,
       });
     }),
 
   getSummary: protectedProcedure.query(async ({ ctx }) => {
-    const now = new Date();
+    const now = nowLocal();
     const startOfCurrentMonth = startOfMonth(now);
     const startOfLastMonth = subMonths(startOfCurrentMonth, 1);
 
-    const [currentMonth, lastMonth, activeGoals] = await Promise.all([
+    const [currentMonthIncome, currentMonthExpense, lastMonthIncome, lastMonthExpense, activeGoals] = await Promise.all([
       ctx.prisma.transaction.aggregate({
         where: {
           userId: ctx.userId,
+          type: "INCOME",
+          competenceAt: { gte: startOfCurrentMonth },
+          status: "CONFIRMED",
+        },
+        _sum: { amountCents: true },
+      }),
+
+      ctx.prisma.transaction.aggregate({
+        where: {
+          userId: ctx.userId,
+          type: "EXPENSE",
           competenceAt: { gte: startOfCurrentMonth },
           status: { not: "CANCELLED" },
         },
         _sum: { amountCents: true },
       }),
+
       ctx.prisma.transaction.aggregate({
         where: {
           userId: ctx.userId,
+          type: "INCOME",
+          competenceAt: { gte: startOfLastMonth, lt: startOfCurrentMonth },
+          status: "CONFIRMED",
+        },
+        _sum: { amountCents: true },
+      }),
+
+      ctx.prisma.transaction.aggregate({
+        where: {
+          userId: ctx.userId,
+          type: "EXPENSE",
           competenceAt: { gte: startOfLastMonth, lt: startOfCurrentMonth },
           status: { not: "CANCELLED" },
         },
         _sum: { amountCents: true },
       }),
+
       ctx.prisma.goal.findMany({
         where: { userId: ctx.userId, status: "ACTIVE" },
         select: {
@@ -102,10 +157,22 @@ export const projectionsRouter = router({
 
     const currentBalance = await getCurrentBalance(ctx.prisma, ctx.userId);
 
+    const currentIncome = currentMonthIncome._sum.amountCents ?? 0;
+    const currentExpense = currentMonthExpense._sum.amountCents ?? 0;
+    const lastIncome = lastMonthIncome._sum.amountCents ?? 0;
+    const lastExpense = lastMonthExpense._sum.amountCents ?? 0;
+
+    const currentNet = currentIncome - currentExpense;
+    const lastNet = lastIncome - lastExpense;
+    const percentChange = lastNet !== 0 ? ((currentNet - lastNet) / Math.abs(lastNet)) * 100 : 0;
+
     return {
       currentBalance,
-      currentMonthTotal: currentMonth._sum.amountCents ?? 0,
-      lastMonthTotal: lastMonth._sum.amountCents ?? 0,
+      currentMonthIncome: currentIncome,
+      currentMonthExpense: currentExpense,
+      lastMonthIncome: lastIncome,
+      lastMonthExpense: lastExpense,
+      percentChange: Math.round(percentChange * 10) / 10,
       activeGoals: activeGoals.map((g) => ({
         ...g,
         percentComplete: Math.round((g.currentCents / g.targetCents) * 100),
@@ -117,7 +184,10 @@ export const projectionsRouter = router({
 async function getCurrentBalance(prisma: any, userId: string): Promise<number> {
   const result = await prisma.transaction.groupBy({
     by: ["type"],
-    where: { userId, status: "CONFIRMED" },
+    where: { 
+      userId, 
+      status: "CONFIRMED",
+    },
     _sum: { amountCents: true },
   });
 

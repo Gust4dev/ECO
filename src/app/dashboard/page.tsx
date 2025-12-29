@@ -30,9 +30,9 @@ export default function DashboardPage() {
 
       <MonthSummary
         currentBalance={summary?.currentBalance ?? 0}
-        income={summary?.currentMonthTotal ?? 0}
-        expenses={0}
-        percentChange={0}
+        income={summary?.currentMonthIncome ?? 0}
+        expenses={summary?.currentMonthExpense ?? 0}
+        percentChange={summary?.percentChange ?? 0}
       />
 
       <div className="grid gap-6 lg:grid-cols-2">
